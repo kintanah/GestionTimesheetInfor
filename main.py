@@ -72,6 +72,9 @@ if "start_date_input" not in st.session_state:
 if "end_date_input" not in st.session_state:
     st.session_state["end_date_input"] = default_end
 
+if "warning_only_mode" not in st.session_state:
+    st.session_state.warning_only_mode = False
+
 
 def reset_filters_callback():
     st.session_state["start_date_input"] = default_start
@@ -85,6 +88,7 @@ def reset_filters_callback():
     st.session_state.snapshot_start_date = default_start
     st.session_state.snapshot_end_date = default_end
     st.session_state.snapshot_pms = []
+    st.session_state.warning_only_mode = False
 
 
 # =========================================================
@@ -256,14 +260,15 @@ if btn_afficher:
         st.session_state.show_tables = True
         st.session_state.initialized_mapping = False
         st.session_state.isolated_person = None
+        st.session_state.warning_only_mode = False
 
 if st.session_state.show_tables:
     if not has_all_files:
         st.warning("⚠️ Required files have been removed.")
         st.session_state.show_tables = False
     else:
-        df_beeline = read_excel_safely(file_beeline, sheet_beeline, is_beeline=True)
-        df_timesheet = read_excel_safely(file_timesheet, sheet_timesheet, is_beeline=False)
+        df_beeline_raw = read_excel_safely(file_beeline, sheet_beeline, is_beeline=True)
+        df_timesheet_raw = read_excel_safely(file_timesheet, sheet_timesheet, is_beeline=False)
 
         validation_passed = True
         pm_match_found = True
@@ -271,16 +276,16 @@ if st.session_state.show_tables:
         # =========================================================
         # SECURITÉ & SÉLECTION - BEELINE
         # =========================================================
-        if df_beeline is not None:
-            if len(df_beeline.columns) < 18:
+        if df_beeline_raw is not None:
+            if len(df_beeline_raw.columns) < 18:
                 st.error(
                     f"⚠️ **Format Error:** The file '{file_beeline.name}' does not match the expected Beeline schema (requires at least 18 columns).")
                 validation_passed = False
                 st.session_state.show_tables = False
             else:
                 try:
-                    bl_dates = pd.to_datetime(df_beeline.iloc[:, 0], errors='coerce', format='mixed').dt.date
-                    df_beeline = df_beeline[(bl_dates >= st.session_state.snapshot_start_date) & (
+                    bl_dates = pd.to_datetime(df_beeline_raw.iloc[:, 0], errors='coerce', format='mixed').dt.date
+                    df_beeline = df_beeline_raw[(bl_dates >= st.session_state.snapshot_start_date) & (
                             bl_dates <= st.session_state.snapshot_end_date)]
                 except:
                     st.error(
@@ -300,16 +305,16 @@ if st.session_state.show_tables:
         # =========================================================
         # SECURITÉ & SÉLECTION - TIMESHEET
         # =========================================================
-        if validation_passed and df_timesheet is not None:
-            if len(df_timesheet.columns) < 11:
+        if validation_passed and df_timesheet_raw is not None:
+            if len(df_timesheet_raw.columns) < 11:
                 st.error(
                     f"⚠️ **Format Error:** The file '{file_timesheet.name}' does not match the expected Timesheet schema (requires at least 11 columns).")
                 validation_passed = False
                 st.session_state.show_tables = False
             else:
                 try:
-                    ts_dates = pd.to_datetime(df_timesheet.iloc[:, 2], errors='coerce', format='mixed').dt.date
-                    df_timesheet = df_timesheet[(ts_dates >= st.session_state.snapshot_start_date) & (
+                    ts_dates = pd.to_datetime(df_timesheet_raw.iloc[:, 2], errors='coerce', format='mixed').dt.date
+                    df_timesheet = df_timesheet_raw[(ts_dates >= st.session_state.snapshot_start_date) & (
                             ts_dates <= st.session_state.snapshot_end_date)]
                 except:
                     st.error(
@@ -321,6 +326,9 @@ if st.session_state.show_tables:
                     df_timesheet = df_timesheet[df_timesheet.iloc[:, 8].str.strip() == "No"]
                     if not pm_match_found:
                         df_timesheet = pd.DataFrame(columns=df_timesheet.columns)
+
+        # Liste stockant les personnes en anomalie pour le bouton de filtrage
+        warning_persons_list = []
 
         # =========================================================
         # SECURITÉ FIABLE CONSTANTE BRUTE - NAME MAPPING
@@ -334,11 +342,9 @@ if st.session_state.show_tables:
                 try:
                     mapping_df = pd.read_excel(file_mapping, sheet_name=sheet_mapping, dtype=str).fillna("")
 
-                    # Définition brute des colonnes textuelles obligatoires attendues
                     expected_headers = ["Timesheet", "Beeline", "Aligned Name"]
                     actual_headers = list(mapping_df.columns)
 
-                    # Vérification brute stricte sur la correspondance exacte des 3 premiers en-têtes
                     has_matching_headers = len(actual_headers) >= 3 and all(
                         expected in actual_headers[:3] for expected in expected_headers)
 
@@ -348,7 +354,6 @@ if st.session_state.show_tables:
                         validation_passed = False
                         st.session_state.show_tables = False
                     else:
-                        # Liaison dynamique et sûre via le nom textuel brut des colonnes au lieu des index numériques fragiles
                         active_beeline_names = set(
                             df_beeline.iloc[:, 13].str.strip().tolist()) if df_beeline is not None else set()
                         active_timesheet_names = set(
@@ -391,6 +396,22 @@ if st.session_state.show_tables:
                     validation_passed = False
                     st.session_state.show_tables = False
 
+        # Pre-calcul systématique des warnings pour alimenter le panneau des consultants
+        if validation_passed and pm_match_found:
+            for name in st.session_state.aligned_names:
+                details = st.session_state.mapping_dict.get(name, {"timesheet": name, "beeline": name})
+                cond_ts = [details["timesheet"], name]
+                cond_bl = [details["beeline"], name]
+                sub_bl = df_beeline[df_beeline.iloc[:, 13].str.strip().isin(cond_bl)] if df_beeline is not None and len(
+                    df_beeline.columns) > 13 else None
+                sub_ts = df_timesheet[
+                    df_timesheet.iloc[:, 1].str.strip().isin(cond_ts)] if df_timesheet is not None and len(
+                    df_timesheet.columns) > 1 else None
+                hrs_bl = calculate_total_by_index(sub_bl, 17)
+                hrs_ts = calculate_total_by_index(sub_ts, 10)
+                if hrs_bl != hrs_ts or hrs_bl == 0:
+                    warning_persons_list.append(name)
+
         # -------------------------------------------------
         # ALIGNED NAMES CARD CONTAINER DISPLAY SECTION
         # -------------------------------------------------
@@ -402,17 +423,43 @@ if st.session_state.show_tables:
                     st.warning(
                         "⚠️ No data found matching the selected Project Manager(s) in Beeline. All outputs are hidden.")
                 else:
+                    # En-tête de contrôle d'isolation des cartes
+                    header_col1, header_col2 = st.columns([8, 4])
+                    with header_col1:
+                        if st.session_state.isolated_person is not None:
+                            st.info(f"Isolated view currently active for: **{st.session_state.isolated_person}**")
+                        elif st.session_state.warning_only_mode:
+                            st.info("🚨 **Warning View active:** Showing only profiles with reconciliation anomalies.")
+
+                    with header_col2:
+                        if st.session_state.isolated_person is not None:
+                            if st.button("👁️ Show All Consultants", key="reset_isolated_btn", type="primary",
+                                         use_container_width=True):
+                                st.session_state.isolated_person = None
+                                st.session_state.warning_only_mode = False
+                                st.rerun()
+                        elif st.session_state.warning_only_mode:
+                            if st.button("👁️ Show All Consultants", key="reset_warning_btn", type="primary",
+                                         use_container_width=True):
+                                st.session_state.warning_only_mode = False
+                                st.rerun()
+                        elif len(warning_persons_list) > 0:
+                            if st.button(f"🚨 Show Warnings Only ({len(warning_persons_list)})",
+                                         key="activate_warning_btn", type="secondary", use_container_width=True):
+                                st.session_state.warning_only_mode = True
+                                st.session_state.isolated_person = None
+                                st.rerun()
+
+                    # Détermination des cartes à afficher physiquement à l'écran
                     if st.session_state.isolated_person is not None:
-                        st.info(f"Isolated view currently active for: **{st.session_state.isolated_person}**")
-                        if st.button("👁️ Reset View (Show All Users)", type="secondary"):
-                            st.session_state.isolated_person = None
-                            st.rerun()
+                        display_names = [st.session_state.isolated_person]
+                    elif st.session_state.warning_only_mode:
+                        display_names = warning_persons_list
+                    else:
+                        display_names = st.session_state.aligned_names
 
-                    if len(st.session_state.aligned_names) > 0:
+                    if len(display_names) > 0:
                         name_to_remove = None
-                        display_names = [n for n in st.session_state.aligned_names if
-                                         st.session_state.isolated_person is None or n == st.session_state.isolated_person]
-
                         cards_per_row = 6
                         for i in range(0, len(display_names), cards_per_row):
                             chunk = display_names[i:i + cards_per_row]
@@ -420,25 +467,65 @@ if st.session_state.show_tables:
 
                             for idx, name in enumerate(chunk):
                                 orig_idx = st.session_state.aligned_names.index(name)
+                                details = st.session_state.mapping_dict.get(name, {"timesheet": name, "beeline": name})
+
+                                cond_ts = [details["timesheet"], name]
+                                cond_bl = [details["beeline"], name]
+
+                                sub_bl = df_beeline[
+                                    df_beeline.iloc[:, 13].str.strip().isin(cond_bl)] if df_beeline is not None and len(
+                                    df_beeline.columns) > 13 else None
+                                sub_ts = df_timesheet[df_timesheet.iloc[:, 1].str.strip().isin(
+                                    cond_ts)] if df_timesheet is not None and len(df_timesheet.columns) > 1 else None
+
+                                hrs_bl = calculate_total_by_index(sub_bl, 17)
+                                hrs_ts = calculate_total_by_index(sub_ts, 10)
+
+                                is_equivalent = (name not in warning_persons_list)
 
                                 with grid_cols[idx]:
-                                    with st.container(border=True):
-                                        st.markdown(f"👤 **{name}**")
+                                    if not is_equivalent:
+                                        st.markdown(
+                                            f"""
+                                            <div style="background-color: #FFEBEE; border: 1.5px solid #FF1744; border-radius: 5px; padding: 10px; margin-bottom: 10px;">
+                                                <span style="color: #B71C1C; font-weight: bold;">⚠️ {name}</span>
+                                                <div style="font-size: 11px; color: #555; margin-top: 5px;">
+                                                    Beeline: {hrs_bl}h | TS: {hrs_ts}h
+                                                </div>
+                                            </div>
+                                            """,
+                                            unsafe_allow_html=True
+                                        )
+                                    else:
+                                        st.markdown(
+                                            f"""
+                                            <div style="background-color: #E8F5E9; border: 1.5px solid #00E676; border-radius: 5px; padding: 10px; margin-bottom: 10px;">
+                                                <span style="color: #1B5E20; font-weight: bold;">👤 {name}</span>
+                                                <div style="font-size: 11px; color: #555; margin-top: 5px;">
+                                                    Heures validées: {hrs_bl}h
+                                                </div>
+                                            </div>
+                                            """,
+                                            unsafe_allow_html=True
+                                        )
 
+                                    card_btn_col1, card_btn_col2 = st.columns(2)
+                                    with card_btn_col1:
                                         if st.session_state.isolated_person is None:
-                                            card_btn1, card_btn2 = st.columns(2)
-                                            with card_btn1:
-                                                if st.button("👁️ View", key=f"isolate_card_{orig_idx}",
-                                                             use_container_width=True):
-                                                    st.session_state.isolated_person = name
-                                                    st.rerun()
-                                            with card_btn2:
-                                                if st.button("❌", key=f"remove_card_{orig_idx}",
-                                                             use_container_width=True):
-                                                    name_to_remove = name
+                                            if st.button("👁️ View", key=f"isolate_card_{orig_idx}",
+                                                         use_container_width=True):
+                                                st.session_state.isolated_person = name
+                                                st.session_state.warning_only_mode = False
+                                                st.rerun()
                                         else:
                                             st.button("Isolated 🔒", key=f"disabled_isolate_{orig_idx}", disabled=True,
                                                       use_container_width=True)
+                                    with card_btn_col2:
+                                        if st.session_state.isolated_person is None:
+                                            if st.button("❌", key=f"remove_card_{orig_idx}", use_container_width=True):
+                                                name_to_remove = name
+                                        else:
+                                            st.write("")
 
                         if name_to_remove:
                             st.session_state.aligned_names.remove(name_to_remove)
@@ -446,16 +533,21 @@ if st.session_state.show_tables:
                                 st.session_state.isolated_person = None
                             st.rerun()
                     else:
-                        st.warning("No aligned names match the criteria.")
+                        st.warning("No consultants match the active warning criteria.")
 
             # -------------------------------------------------
-            # FINAL DATA TABLES FILTERING
+            # FINAL DATA TABLES FILTERING & GAP CALCULATION
             # -------------------------------------------------
             if pm_match_found:
                 final_ts_filter = []
                 final_bl_filter = []
-                list_to_process = st.session_state.aligned_names if st.session_state.isolated_person is None else [
-                    st.session_state.isolated_person]
+
+                if st.session_state.isolated_person is not None:
+                    list_to_process = [st.session_state.isolated_person]
+                elif st.session_state.warning_only_mode:
+                    list_to_process = warning_persons_list
+                else:
+                    list_to_process = st.session_state.aligned_names
 
                 for name in list_to_process:
                     details = st.session_state.mapping_dict.get(name, {"timesheet": name, "beeline": name})
@@ -477,23 +569,44 @@ if st.session_state.show_tables:
 
             total_beeline = calculate_total_by_index(df_beeline, 17)
             total_timesheet = calculate_total_by_index(df_timesheet, 10)
+            global_gap = round(total_beeline - total_timesheet, 2)
+
+            # -------------------------------------------------
+            # METRICS DISPLAY SECTION (TOP BAR)
+            # -------------------------------------------------
+            st.markdown("---")
+            metric_col1, metric_col2, metric_col3 = st.columns(3)
+
+            with metric_col1:
+                st.metric("🐝 Beeline Total Hours", f"{total_beeline} hrs")
+            with metric_col2:
+                st.metric("📅 Timesheet Total Hours", f"{total_timesheet} hrs")
+            with metric_col3:
+                gap_delta = f"⚠️ Discrepancy" if global_gap != 0 else "✅ Perfect Match"
+                st.metric("📊 Gap (Beeline - TS)", f"{global_gap} hrs", delta=gap_delta,
+                          delta_color="inverse" if global_gap != 0 else "normal")
 
             # -------------------------------------------------
             # TWO-COLUMN DATA VIEW AFFORDANCE
             # -------------------------------------------------
             st.markdown("---")
+
+            if st.session_state.warning_only_mode:
+                st.info("🚨 **Active View:** Tables and cards are currently isolated on **Warning Profiles Only**.")
+            elif st.session_state.isolated_person is not None:
+                st.info(
+                    f"👁️ **Active View:** Tables and cards are currently isolated on profile: **{st.session_state.isolated_person}**.")
+
             col1, col2 = st.columns(2)
 
             with col1:
                 st.subheader("🐝 Beeline Data")
                 if df_beeline is not None:
-                    st.metric("🧮 Total Billable Hours", total_beeline)
-                    st.dataframe(df_beeline, width="stretch", height=600)
+                    st.dataframe(df_beeline, width="stretch", height=550)
                     st.success(f"✅ Displayed Rows: {len(df_beeline)}")
 
             with col2:
                 st.subheader("📅 Timesheet Data")
                 if df_timesheet is not None:
-                    st.metric("🧮 Total Workload (hr)", total_timesheet)
-                    st.dataframe(df_timesheet, width="stretch", height=600)
+                    st.dataframe(df_timesheet, width="stretch", height=550)
                     st.success(f"✅ Displayed Rows: {len(df_timesheet)}")
