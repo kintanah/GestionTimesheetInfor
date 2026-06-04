@@ -4,6 +4,7 @@ from datetime import date
 import calendar
 from PIL import Image, ImageDraw
 import warnings
+import io  # NOUVEAU: Importation pour l'export Excel
 
 # =========================================================
 # WARNINGS OPTIMIZATION
@@ -221,7 +222,6 @@ with st.expander("Monitored Inputs & Columns Mapping Configuration", expanded=Tr
                 sel_bl_project = st.selectbox("Project Column (Beeline)", cols_beeline_list, index=def_bl_proj)
                 sel_bl_desc = st.selectbox("Description Column (Beeline)", cols_beeline_list, index=def_bl_desc)
 
-                # --- FILTRE DYNAMIQUE PAR SYSTÈME DE CARDS ULTRA-RÉACTIF SANS CHARGEMENT ---
                 if sel_bl_project in df_bl_init.columns and sel_bl_pm in df_bl_init.columns:
                     if st.session_state.project_managers:
                         cleaned_pms = [pm.replace(chr(34), "").strip() for pm in st.session_state.project_managers if
@@ -244,26 +244,22 @@ with st.expander("Monitored Inputs & Columns Mapping Configuration", expanded=Tr
 
                     st.markdown("<br><b>🎯 Select Project Filters (Beeline) :</b>", unsafe_allow_html=True)
 
-                    # Remplissage de l'état temporaire réactif pour les projets Beeline
                     for p_item in unique_bl_projects:
                         p_key = f"proj_bl_state_{p_item}"
                         if p_key not in st.session_state.temp_project_checkboxes:
                             st.session_state.temp_project_checkboxes[
                                 p_key] = p_item in st.session_state.filter_bl_project_val
 
-                    # Affichage des cartes de projets sur 2 colonnes compactes internes
                     proj_cards_cols = st.columns(2)
                     for idx_p, p_item in enumerate(unique_bl_projects):
                         p_key = f"proj_bl_state_{p_item}"
                         with proj_cards_cols[idx_p % 2]:
                             current_p_state = st.session_state.temp_project_checkboxes.get(p_key, False)
-                            # Clic instantané mémorisé sans aucun rechargement lourd de l'écran
                             new_p_state = st.checkbox(f"{p_item}", key=f"widget_proj_bl_{idx_p}", value=current_p_state)
                             if new_p_state != current_p_state:
                                 st.session_state.temp_project_checkboxes[p_key] = new_p_state
                                 st.rerun()
 
-                    # Consolidation de la liste finale pour le traitement des données
                     active_selected_projects = [p for p in unique_bl_projects if
                                                 st.session_state.temp_project_checkboxes.get(f"proj_bl_state_{p}",
                                                                                              False)]
@@ -336,7 +332,7 @@ with btn_col2:
 
 
 # =========================================================
-# EXCEL READ FUNCTION
+# EXCEL READ/WRITE FUNCTIONS
 # =========================================================
 def read_excel_safely(uploaded_file, selected_sheet):
     if uploaded_file is None or selected_sheet is None:
@@ -351,7 +347,7 @@ def read_excel_safely(uploaded_file, selected_sheet):
         st.error(f"❌ Error while reading {uploaded_file.name} ({selected_sheet}): {e}")
         return None
 
-# MODIFICATION: Gestion des virgules pour éviter que Pandas retourne 0
+
 def calculate_total_by_column_name(df, column_name):
     if df is None or df.empty or not column_name or column_name not in df.columns:
         return 0
@@ -361,6 +357,15 @@ def calculate_total_by_column_name(df, column_name):
         return round(total, 2)
     except:
         return 0
+
+
+# NOUVEAU: Fonction pour convertir un DataFrame en Excel (en mémoire)
+def convert_df_to_excel(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Exported Data')
+    processed_data = output.getvalue()
+    return processed_data
 
 
 # =========================================================
@@ -425,7 +430,6 @@ if st.session_state.show_tables:
                 st.session_state.show_tables = False
             else:
                 try:
-                    # MODIFICATION : dayfirst=True pour éviter que Pandas n'inverse mois et jours
                     df_beeline_raw[st.session_state.col_bl_date] = pd.to_datetime(
                         df_beeline_raw[st.session_state.col_bl_date], errors='coerce', dayfirst=True).dt.date
                     df_beeline = df_beeline_raw[
@@ -443,7 +447,6 @@ if st.session_state.show_tables:
                     df_beeline = df_beeline[
                         df_beeline[st.session_state.col_bl_pm].str.contains(regex_bl_run, case=False, na=False)]
 
-                    # --- FILTRAGE AVEC LA SÉLECTION DE PROJETS EN LISTE (.isin()) ---
                     if st.session_state.filter_bl_project_val and "[All Projects]" not in st.session_state.filter_bl_project_val:
                         df_beeline = df_beeline[df_beeline[st.session_state.col_bl_project].str.strip().isin(
                             st.session_state.filter_bl_project_val)]
@@ -459,7 +462,6 @@ if st.session_state.show_tables:
                 st.session_state.show_tables = False
             else:
                 try:
-                    # MODIFICATION : dayfirst=True pour éviter que Pandas n'inverse mois et jours
                     df_timesheet_raw[st.session_state.col_ts_date] = pd.to_datetime(
                         df_timesheet_raw[st.session_state.col_ts_date], errors='coerce', dayfirst=True).dt.date
                     df_timesheet = df_timesheet_raw[
@@ -472,9 +474,9 @@ if st.session_state.show_tables:
                     st.session_state.show_tables = False
 
                 if validation_passed:
-                    # MODIFICATION : insensible à la casse pour capter les "FALSE" ou "False"
                     target_val = "false" if "Non Billable ?" in df_timesheet.columns else "no"
-                    df_timesheet = df_timesheet[df_timesheet[st.session_state.col_ts_lock].astype(str).str.strip().str.lower() == target_val]
+                    df_timesheet = df_timesheet[
+                        df_timesheet[st.session_state.col_ts_lock].astype(str).str.strip().str.lower() == target_val]
                     if st.session_state.filter_ts_project_val != "[All Projects]":
                         df_timesheet = df_timesheet[df_timesheet[
                                                         st.session_state.col_ts_project].str.strip() == st.session_state.filter_ts_project_val]
@@ -534,7 +536,6 @@ if st.session_state.show_tables:
                             except Exception:
                                 continue
 
-                        # MODIFICATION : Inscription automatique des consultants absents du fichier Mapping mais présents dans les données
                         mapped_bl_names = [v["beeline"] for v in mapping_dict.values() if v["beeline"]]
                         mapped_ts_names = [v["timesheet"] for v in mapping_dict.values() if v["timesheet"]]
 
@@ -799,9 +800,9 @@ if st.session_state.show_tables:
                 rev_bl_map = {v["beeline"]: k for k, v in st.session_state.mapping_dict.items() if v["beeline"]}
                 df_bl_group["_AlignedName"] = df_bl_group[st.session_state.col_bl_name].str.strip().map(
                     rev_bl_map).fillna(df_bl_group[st.session_state.col_bl_name].str.strip())
-                # MODIFICATION : Gestion des virgules pour le grouping matrix
-                df_bl_group["_Hours"] = pd.to_numeric(df_bl_group[st.session_state.col_bl_hours].astype(str).str.replace(',', '.'),
-                                                      errors="coerce").fillna(0)
+                df_bl_group["_Hours"] = pd.to_numeric(
+                    df_bl_group[st.session_state.col_bl_hours].astype(str).str.replace(',', '.'),
+                    errors="coerce").fillna(0)
 
                 df_bl_agg = df_bl_group.groupby(
                     [st.session_state.col_bl_date, "_AlignedName", st.session_state.col_bl_project,
@@ -816,9 +817,9 @@ if st.session_state.show_tables:
                 rev_ts_map = {v["timesheet"]: k for k, v in st.session_state.mapping_dict.items() if v["timesheet"]}
                 df_ts_group["_AlignedName"] = df_ts_group[st.session_state.col_ts_name].str.strip().map(
                     rev_ts_map).fillna(df_ts_group[st.session_state.col_ts_name].str.strip())
-                # MODIFICATION : Gestion des virgules pour le grouping matrix
-                df_ts_group["_Hours"] = pd.to_numeric(df_ts_group[st.session_state.col_ts_hours].astype(str).str.replace(',', '.'),
-                                                      errors="coerce").fillna(0)
+                df_ts_group["_Hours"] = pd.to_numeric(
+                    df_ts_group[st.session_state.col_ts_hours].astype(str).str.replace(',', '.'),
+                    errors="coerce").fillna(0)
 
                 df_ts_agg = df_ts_group.groupby(
                     [st.session_state.col_ts_date, "_AlignedName", st.session_state.col_ts_project,
@@ -870,6 +871,17 @@ if st.session_state.show_tables:
                                             "Timesheet Description": st.column_config.TextColumn(width="large")})
                 st.caption(
                     "🎨 **Color Key Legend:** Green = Perfect Balance | Orange = Divergent Hours Discrepancy | Red = Missing Corresponding Entry (No Match Found)")
+
+                # NOUVEAU: Bouton d'export pour la Matrice
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.download_button(
+                    label="📥 Download Matrix as Excel",
+                    data=convert_df_to_excel(df_recon),
+                    file_name=f"Reconciliation_Matrix_{date.today()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_matrix"
+                )
+
             else:
                 st.info("No data available to build the reconciliation matrix.")
 
@@ -884,12 +896,31 @@ if st.session_state.show_tables:
                     if not df_bl_display.empty:
                         st.dataframe(df_bl_display, width="stretch", height=400)
                         st.success(f"✅ Displayed Rows: {len(df_bl_display)}")
+
+                        # NOUVEAU: Bouton d'export pour Beeline
+                        st.download_button(
+                            label="📥 Download Beeline Data",
+                            data=convert_df_to_excel(df_bl_display),
+                            file_name=f"Beeline_Raw_Data_{date.today()}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_beeline"
+                        )
                     else:
                         st.info("No unfiltered Beeline stream data rows to show.")
+
                 with col2:
                     st.subheader("📅 Timesheet Raw Data Stream")
                     if not df_ts_display.empty:
                         st.dataframe(df_ts_display, width="stretch", height=400)
                         st.success(f"✅ Displayed Rows: {len(df_ts_display)}")
+
+                        # NOUVEAU: Bouton d'export pour Timesheet
+                        st.download_button(
+                            label="📥 Download Timesheet Data",
+                            data=convert_df_to_excel(df_ts_display),
+                            file_name=f"Timesheet_Raw_Data_{date.today()}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_timesheet"
+                        )
                     else:
                         st.info("No unfiltered Timesheet stream data rows to show.")
